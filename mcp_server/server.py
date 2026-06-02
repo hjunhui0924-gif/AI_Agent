@@ -1,11 +1,16 @@
+import sys
 from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
 
-from agent import current_datetime, perform_web_search, weather_lookup
-from file_utils import SUPPORTED_EXTENSIONS, parse_local_file
-from stock_utils import format_hs_stock_item, get_hs_index_item, get_hs_stock_item, has_juhe_stock_key
-from weather_utils import current_cn_datetime, geocode_location, has_amap_key
+ROOT_DIR = Path(__file__).resolve().parent.parent
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+
+from agents.agent import current_datetime, perform_web_search, weather_lookup
+from utils.file_utils import SUPPORTED_EXTENSIONS, parse_local_file
+from utils.stock_utils import format_hs_stock_item, get_hs_index_item, get_hs_stock_item, has_juhe_stock_key
+from utils.weather_utils import current_cn_datetime, geocode_location, has_amap_key
 
 mcp = FastMCP("ai-agent-tools")
 

@@ -7,7 +7,7 @@ from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from langchain.messages import AIMessage, AIMessageChunk
 
-from agent import (
+from agents.agent import (
     consume_activity_log,
     consume_source_cards,
     delete_thread,
@@ -15,7 +15,7 @@ from agent import (
     list_threads,
     stream_chat,
 )
-from file_utils import UnsupportedFileTypeError, parse_uploads
+from utils.file_utils import UnsupportedFileTypeError, parse_uploads
 
 load_dotenv()
 

@@ -1,12 +1,13 @@
 # AI Agent
 
-一个基于 `FastAPI + LangChain + LangGraph` 的通用 AI 助手项目，提供接近 ChatGPT 的网页工作台体验，支持多轮对话、文件问答、图片理解、可选联网搜索，以及 MCP 工具复用。
+一个基于 `FastAPI + LangChain + LangGraph` 的通用 AI 助手项目，提供接近 ChatGPT 的网页工作台体验，支持多轮对话、文件问答、图片理解、可选联网搜索、本地 Chroma RAG 检索，以及 MCP 工具复用。
 
 ## 主要功能
 
 - 通用对话：适合办公问答、学习辅导、内容生成、总结归纳、数据解释等场景。
 - 多会话管理：支持新建会话、历史恢复、会话切换与删除。
 - 文件问答：支持上传 `pdf / txt / md / csv / docx / doc / xlsx / xls`，自动解析文本并按问题召回相关片段。
+- 本地 Chroma RAG：文本附件会优先走 Chroma 向量检索，检索失败时自动回退到关键词召回，增强长文档与语义检索能力。
 - 图片理解：支持上传 `png / jpg / jpeg / webp / gif`，可用于 OCR、截图理解、图像分析。
 - 联网搜索：前端可显式开启，后端按需调用搜索与时效校验，不默认强制联网。
 - 可见处理过程：在回答过程中展示文件读取、工具调用、联网搜索等可见步骤，不暴露私有推理。
@@ -27,19 +28,24 @@
 - Search: `Tavily`（可选）
 - Weather / Stock: 高德、聚合数据等外部接口（可选）
 - File Parsing: `pypdf`, `python-docx`, `openpyxl`, `xlrd`
+- RAG / Vector Retrieval: `ChromaDB`
 
 ## 项目结构
 
 ```text
 AI_Agent/
 ├─ app.py
-├─ agent.py
-├─ file_utils.py
-├─ weather_utils.py
-├─ stock_utils.py
-├─ oss_utils.py
 ├─ requirements.txt
 ├─ .env.example
+├─ agents/
+│  ├─ __init__.py
+│  └─ agent.py
+├─ utils/
+│  ├─ __init__.py
+│  ├─ file_utils.py
+│  ├─ weather_utils.py
+│  ├─ stock_utils.py
+│  └─ oss_utils.py
 ├─ static/
 │  ├─ index.html
 │  ├─ main.js
@@ -109,6 +115,12 @@ http://127.0.0.1:8000
 - `JUHE_STOCK_API_KEY`
   用于 A 股指数 / 股票行情查询。
 
+- `EMBEDDING_API_KEY`
+- `EMBEDDING_BASE_URL`
+- `EMBEDDING_MODEL`
+- `OPENAI_EMBEDDING_MODEL`
+  用于 Chroma 文档检索的 embedding 配置。未单独配置时，会回退复用 `LLM_API_KEY` / `OPENAI_API_KEY` 等现有模型配置；默认模型为 `text-embedding-3-small`。
+
 - `LANGSMITH_API_KEY`
 - `LANGSMITH_TRACING`
 - `LANGSMITH_PROJECT`
@@ -134,6 +146,13 @@ http://127.0.0.1:8000
 - `.jpeg`
 - `.webp`
 - `.gif`
+
+## 文档检索说明
+
+- 文本附件上传后，会先被解析、切块，再进入本地 Chroma 检索流程。
+- 当前策略为：`Chroma 语义检索优先 + 关键词召回兜底`。
+- 适合提升长文档、多段落、近义表达、弱关键词问题下的命中率。
+- Chroma 运行期数据默认写入 `resources/chroma_runtime/`。
 
 ## MCP Server
 
@@ -167,10 +186,11 @@ python mcp_server/server.py
 - 联网搜索默认关闭，只有前端显式开启后才会触发。
 - `.doc` 为兼容性有限格式，推荐优先上传 `.docx`。
 - 运行过程中会在本地产生 SQLite 会话数据和缓存文件，不建议提交到仓库。
+- 当前 Chroma 接入为本地运行时检索方案，适合单机开发与演示；如需更强性能，可继续扩展为持久化索引与多文件缓存。
 
 ## 后续可扩展方向
 
-- 接入向量数据库，增强长文档检索能力。
+- 为 Chroma 增加文件级持久化索引和增量更新能力。
 - 为搜索来源增加更强的排序与缓存。
 - 增加更完整的测试脚本与自动化回归。
 - 增加 Docker 部署文件与生产环境配置。

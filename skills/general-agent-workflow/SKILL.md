@@ -23,8 +23,8 @@ Preserve these product principles:
 Before editing, inspect these files first:
 
 - `app.py`: request/response layer and streaming chat endpoint
-- `agent.py`: prompt, tools, persistence, and chat orchestration
-- `file_utils.py`: supported file formats and extraction limits
+- `agents/agent.py`: prompt, tools, persistence, and chat orchestration
+- `utils/file_utils.py`: supported file formats and extraction limits
 - `static/index.html`, `static/main.js`, `static/style.css`: chat UI
 - `mcp_server/server.py`: tools exposed through MCP
 
@@ -40,7 +40,7 @@ When changing the agent:
 
 If adding a new file type:
 
-- Update `file_utils.py`
+- Update `utils/file_utils.py`
 - Add the extension to both backend support and frontend `accept`
 - Cap extracted text to avoid blowing up token usage
 - Prefer returning a limitation note over pretending parsing succeeded

@@ -9,14 +9,14 @@
 - Accepts multipart chat submissions
 - Streams model output back to the browser
 
-`agent.py`
+`agents/agent.py`
 
 - Initializes the language model
 - Defines optional web search
 - Persists conversation state with SQLite checkpoints
 - Builds hidden attachment and search context sections
 
-`file_utils.py`
+`utils/file_utils.py`
 
 - Parses uploaded files into bounded text
 - Centralizes supported extensions and extraction limits

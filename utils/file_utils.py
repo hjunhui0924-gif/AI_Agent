@@ -8,7 +8,7 @@ import xlrd
 from docx import Document
 from pypdf import PdfReader
 
-from oss_utils import upload_image_bytes
+from utils.oss_utils import upload_image_bytes
 
 MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024
 MAX_TEXT_CHARS_PER_FILE = 90000

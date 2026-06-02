@@ -1,4 +1,5 @@
 import json
+import hashlib
 import os
 import re
 import sqlite3
@@ -7,6 +8,7 @@ import urllib.request
 from contextvars import ContextVar
 from datetime import date, datetime
 from pathlib import Path
+from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
@@ -17,13 +19,24 @@ from langchain_core.tools import tool
 from langchain_tavily import TavilySearch
 from langgraph.checkpoint.sqlite import SqliteSaver
 
-from oss_utils import delete_oss_object
-from stock_utils import format_hs_stock_item, get_hs_index_item, get_hs_stock_item, has_juhe_stock_key
-from weather_utils import current_cn_datetime, format_weather_text, has_amap_key
+try:
+    import chromadb
+    from chromadb.config import Settings as ChromaSettings
+    from chromadb.utils.embedding_functions import DefaultEmbeddingFunction
+    from chromadb.utils.embedding_functions import OpenAIEmbeddingFunction
+except Exception:
+    chromadb = None
+    ChromaSettings = None
+    DefaultEmbeddingFunction = None
+    OpenAIEmbeddingFunction = None
+
+from utils.oss_utils import delete_oss_object
+from utils.stock_utils import format_hs_stock_item, get_hs_index_item, get_hs_stock_item, has_juhe_stock_key
+from utils.weather_utils import current_cn_datetime, format_weather_text, has_amap_key
 
 load_dotenv()
 
-BASE_DIR = Path(__file__).resolve().parent
+BASE_DIR = Path(__file__).resolve().parent.parent
 RESOURCES_DIR = BASE_DIR / "resources"
 RESOURCES_DIR.mkdir(exist_ok=True)
 DB_PATH = RESOURCES_DIR / "ai_agent_threads.db"
@@ -37,9 +50,13 @@ SEARCH_END = "</SEARCH_CONTEXT>"
 ACTIVITY_START = "__ACTIVITY__"
 ACTIVITY_END = "__END_ACTIVITY__"
 MAX_RELEVANT_CHUNKS = 6
+CHROMA_DIR = RESOURCES_DIR / "chroma_runtime"
 
 _activity_log_var: ContextVar[list[dict] | None] = ContextVar("activity_log", default=None)
 _source_cards_var: ContextVar[list[dict] | None] = ContextVar("source_cards", default=None)
+
+_chroma_client = None
+_chroma_embedding_function = None
 
 
 def _today_cn() -> date:
@@ -131,6 +148,69 @@ def _resolve_model_settings() -> dict:
         "api_key": api_key,
         "temperature": 0.2,
     }
+
+
+def _resolve_embedding_settings() -> dict:
+    return {
+        "api_key": (
+            os.getenv("EMBEDDING_API_KEY")
+            or os.getenv("LLM_API_KEY")
+            or os.getenv("OPENAI_API_KEY")
+            or os.getenv("DASHSCOPE_API_KEY")
+            or ""
+        ),
+        "base_url": (
+            os.getenv("EMBEDDING_BASE_URL")
+            or os.getenv("LLM_BASE_URL")
+            or os.getenv("OPENAI_BASE_URL")
+            or os.getenv("DASHSCOPE_BASE_URL")
+            or None
+        ),
+        "model": (
+            os.getenv("EMBEDDING_MODEL")
+            or os.getenv("OPENAI_EMBEDDING_MODEL")
+            or "text-embedding-3-small"
+        ),
+    }
+
+
+def _get_chroma_embedding_function():
+    global _chroma_embedding_function
+    if _chroma_embedding_function is not None:
+        return _chroma_embedding_function
+
+    settings = _resolve_embedding_settings()
+    if OpenAIEmbeddingFunction and settings["api_key"]:
+        _chroma_embedding_function = OpenAIEmbeddingFunction(
+            api_key=settings["api_key"],
+            api_base=settings["base_url"],
+            model_name=settings["model"],
+        )
+        return _chroma_embedding_function
+
+    if DefaultEmbeddingFunction:
+        _chroma_embedding_function = DefaultEmbeddingFunction()
+        return _chroma_embedding_function
+
+    return None
+
+
+def _get_chroma_client():
+    global _chroma_client
+    if _chroma_client is not None:
+        return _chroma_client
+    if not chromadb or not ChromaSettings:
+        return None
+
+    CHROMA_DIR.mkdir(exist_ok=True)
+    _chroma_client = chromadb.Client(
+        ChromaSettings(
+            is_persistent=True,
+            persist_directory=str(CHROMA_DIR),
+            anonymized_telemetry=False,
+        )
+    )
+    return _chroma_client
 
 
 model = init_chat_model(**_resolve_model_settings())
@@ -327,7 +407,7 @@ def _score_chunk(query_terms: set[str], chunk_text: str) -> int:
     return score
 
 
-def _select_relevant_chunks(query: str, chunks: list[dict]) -> list[dict]:
+def _lexical_select_relevant_chunks(query: str, chunks: list[dict]) -> list[dict]:
     if not chunks:
         return []
     query_terms = _collect_query_terms(query)
@@ -338,6 +418,72 @@ def _select_relevant_chunks(query: str, chunks: list[dict]) -> list[dict]:
     scored.sort(key=lambda item: (-item[0], item[1]))
     selected = [chunk for score, _index, chunk in scored if score > 0][:MAX_RELEVANT_CHUNKS]
     return selected or chunks[: min(MAX_RELEVANT_CHUNKS, len(chunks))]
+
+
+def _attachment_file_key(attachment: dict) -> str:
+    payload = f"{attachment.get('name', '')}|{attachment.get('extension', '')}|{attachment.get('content', '')}"
+    return hashlib.sha1(payload.encode("utf-8", errors="ignore")).hexdigest()
+
+
+def _select_relevant_chunks_via_chroma(query: str, attachment: dict) -> list[dict]:
+    chunks = attachment.get("chunks", [])
+    if not chunks:
+        return []
+
+    client = _get_chroma_client()
+    embedding_function = _get_chroma_embedding_function()
+    if client is None or embedding_function is None:
+        return []
+
+    collection_name = f"attachment_{uuid4().hex}"
+    file_key = _attachment_file_key(attachment)
+    chunk_lookup = {}
+    ids = []
+    documents = []
+    metadatas = []
+    for index, chunk in enumerate(chunks):
+        chunk_id = f"{file_key}_{index}"
+        ids.append(chunk_id)
+        documents.append(chunk.get("text", ""))
+        metadatas.append(
+            {
+                "file_key": file_key,
+                "label": chunk.get("label", f"chunk_{index + 1}"),
+                "chunk_index": index,
+            }
+        )
+        chunk_lookup[chunk_id] = chunk
+
+    collection = None
+    try:
+        collection = client.create_collection(name=collection_name, embedding_function=embedding_function)
+        collection.add(ids=ids, documents=documents, metadatas=metadatas)
+        result = collection.query(query_texts=[query], n_results=min(MAX_RELEVANT_CHUNKS, len(ids)))
+    except Exception:
+        if collection is not None:
+            try:
+                client.delete_collection(collection_name)
+            except Exception:
+                pass
+        return []
+
+    try:
+        result_ids = (result.get("ids") or [[]])[0]
+        selected = [chunk_lookup[item_id] for item_id in result_ids if item_id in chunk_lookup]
+        return selected
+    finally:
+        try:
+            client.delete_collection(collection_name)
+        except Exception:
+            pass
+
+
+def _select_relevant_chunks(query: str, chunks: list[dict], attachment: dict | None = None) -> list[dict]:
+    if attachment:
+        selected = _select_relevant_chunks_via_chroma(query, attachment)
+        if selected:
+            return selected
+    return _lexical_select_relevant_chunks(query, chunks)
 
 
 def _parse_tencent_quote(content: str) -> dict | None:
@@ -769,7 +915,7 @@ def _build_attachment_block(attachments: list[dict], query: str) -> str:
             header.append("文件摘要预览:")
             header.append(attachment["preview"])
 
-        relevant_chunks = _select_relevant_chunks(query, attachment.get("chunks", []))
+        relevant_chunks = _select_relevant_chunks(query, attachment.get("chunks", []), attachment=attachment)
         if relevant_chunks:
             header.append("与当前问题最相关的片段:")
             for chunk in relevant_chunks:
