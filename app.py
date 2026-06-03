@@ -8,9 +8,11 @@ from fastapi.staticfiles import StaticFiles
 from langchain.messages import AIMessage, AIMessageChunk
 
 from agents.agent import (
+    attach_assistant_metadata,
     consume_activity_log,
     consume_source_cards,
     delete_thread,
+    encode_assistant_metadata,
     get_messages,
     list_threads,
     stream_chat,
@@ -126,6 +128,8 @@ async def chat(
         try:
             has_output = False
             seen_text = ""
+            assistant_activities = []
+            assistant_sources = []
 
             for chunk, _metadata in stream_chat(
                 message=message,
@@ -133,8 +137,12 @@ async def chat(
                 search_enabled=search_enabled,
                 attachments=attachments,
             ):
-                for payload in flush_runtime_events():
-                    yield payload
+                for activity in consume_activity_log():
+                    assistant_activities.append(activity)
+                    yield _sse_event("activity", activity)
+                for source in consume_source_cards():
+                    assistant_sources.append(source)
+                    yield _sse_event("source", source)
 
                 if not isinstance(chunk, (AIMessageChunk, AIMessage)):
                     continue
@@ -161,8 +169,18 @@ async def chat(
                     seen_text = text
                     yield _sse_event("text", {"delta": delta})
 
-            for payload in flush_runtime_events():
-                yield payload
+            for activity in consume_activity_log():
+                assistant_activities.append(activity)
+                yield _sse_event("activity", activity)
+            for source in consume_source_cards():
+                assistant_sources.append(source)
+                yield _sse_event("source", source)
+
+            seen_text_with_metadata = seen_text + encode_assistant_metadata(assistant_activities, assistant_sources)
+            try:
+                attach_assistant_metadata(thread_id, seen_text, assistant_activities, assistant_sources)
+            except Exception:
+                pass
 
             if not has_output:
                 yield _sse_event("text", {"delta": "暂时没有生成结果，请再试一次。"})
@@ -171,6 +189,9 @@ async def chat(
                 "done",
                 {
                     "ok": True,
+                    "activities": assistant_activities,
+                    "sources": assistant_sources,
+                    "final_text": seen_text_with_metadata,
                     "attachments": [
                         {
                             "name": attachment["name"],

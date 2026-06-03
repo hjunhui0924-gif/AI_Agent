@@ -319,9 +319,7 @@ function renderSessionList() {
         item.className = `session-item ${id === currentThreadId ? "active" : ""}`;
         item.innerHTML = `
             <div class="session-main" data-session-id="${id}">
-                <svg stroke="currentColor" fill="none" stroke-width="2" viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round" height="16" width="16" aria-hidden="true">
-                    <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
-                </svg>
+                <span class="session-chat-icon" aria-hidden="true"></span>
                 <span class="session-title">${escapeHtml(sessionMetas[id].title || "新会话")}</span>
             </div>
             <button class="delete-session-btn" type="button" data-delete-id="${id}" title="删除会话">
@@ -502,6 +500,37 @@ async function loadAndRenderHistory(id) {
 
         if (data.status === "success" && Array.isArray(data.messages) && data.messages.length > 0) {
             data.messages.forEach((msg) => {
+                if (msg.role !== "user" && Array.isArray(msg.activities) && msg.activities.length > 0) {
+                    const stepState = {
+                        activities: (msg.activities || []).filter(shouldDisplayActivity),
+                        startedAt: Date.now(),
+                        completed: true,
+                        collapsed: false,
+                        lastRenderedCount: 0,
+                    };
+                    const wrapper = appendMessageUI(
+                        "bot",
+                        msg.content,
+                        [],
+                        [],
+                        false,
+                        false,
+                        msg.sources || [],
+                        stepState,
+                        msg.attachments || []
+                    );
+                    const frame = {
+                        wrapper,
+                        textContainer: wrapper.querySelector(".assistant-text-block"),
+                        stepsContainer: wrapper.querySelector(".thinking-steps"),
+                        stepState,
+                        sources: msg.sources || [],
+                        textSourceAttachments: msg.attachments || [],
+                        fullText: msg.content || "",
+                    };
+                    renderAssistantFrame(frame, false);
+                    return;
+                }
                 appendMessageUI(
                     msg.role === "user" ? "user" : "bot",
                     msg.content,
@@ -666,6 +695,14 @@ async function runAssistantResponse(payloadOverride = null, targetWrapper = null
                     frame.fullText += payload.delta || "";
                 } else if (eventType === "done") {
                     frame.stepState.completed = true;
+                    if (Array.isArray(payload.activities)) {
+                        frame.stepState.activities = payload.activities.filter(shouldDisplayActivity);
+                        frame.stepState.lastRenderedCount = 0;
+                        if (frame.stepsContainer) frame.stepsContainer.innerHTML = "";
+                    }
+                    if (Array.isArray(payload.sources)) {
+                        frame.sources = dedupeSources(payload.sources);
+                    }
                     frame.textSourceAttachments.splice(0, frame.textSourceAttachments.length, ...(payload.attachments || []));
                 } else if (eventType === "error") {
                     frame.fullText += payload.message || "";

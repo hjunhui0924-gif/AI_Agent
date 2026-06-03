@@ -49,6 +49,8 @@ SEARCH_START = "<SEARCH_CONTEXT>"
 SEARCH_END = "</SEARCH_CONTEXT>"
 ACTIVITY_START = "__ACTIVITY__"
 ACTIVITY_END = "__END_ACTIVITY__"
+ASSISTANT_META_START = "__ASSISTANT_META__"
+ASSISTANT_META_END = "__END_ASSISTANT_META__"
 MAX_RELEVANT_CHUNKS = 6
 CHROMA_DIR = RESOURCES_DIR / "chroma_runtime"
 
@@ -1060,6 +1062,28 @@ def _extract_metadata(text: str) -> dict:
         return {}
 
 
+def encode_assistant_metadata(activities: list[dict], sources: list[dict]) -> str:
+    payload = {
+        "activities": activities or [],
+        "sources": sources or [],
+    }
+    return f"\n\n{ASSISTANT_META_START}{json.dumps(payload, ensure_ascii=False)}{ASSISTANT_META_END}"
+
+
+def _strip_assistant_metadata(text: str) -> str:
+    return re.sub(rf"\s*{re.escape(ASSISTANT_META_START)}[\s\S]*?{re.escape(ASSISTANT_META_END)}", "", text).strip()
+
+
+def _extract_assistant_metadata(text: str) -> dict:
+    match = re.search(rf"{re.escape(ASSISTANT_META_START)}([\s\S]*?){re.escape(ASSISTANT_META_END)}", text)
+    if not match:
+        return {}
+    try:
+        return json.loads(match.group(1))
+    except Exception:
+        return {}
+
+
 def get_messages(thread_id: str) -> list[dict]:
     cp = checkpoint.get({"configurable": {"thread_id": thread_id}})
     if not cp:
@@ -1092,8 +1116,59 @@ def get_messages(thread_id: str) -> list[dict]:
                 }
             )
         elif isinstance(msg, AIMessage):
-            result.append({"role": "assistant", "content": content})
+            metadata = _extract_assistant_metadata(content)
+            cleaned_content = _strip_assistant_metadata(content)
+            if not cleaned_content:
+                continue
+            if result and result[-1].get("role") == "assistant":
+                if cleaned_content not in result[-1]["content"]:
+                    result[-1]["content"] = f"{result[-1]['content']}\n\n{cleaned_content}".strip()
+                result[-1]["activities"].extend(metadata.get("activities", []))
+                result[-1]["sources"].extend(metadata.get("sources", []))
+                continue
+            result.append(
+                {
+                    "role": "assistant",
+                    "content": cleaned_content,
+                    "activities": metadata.get("activities", []),
+                    "sources": metadata.get("sources", []),
+                }
+            )
     return result
+
+
+def attach_assistant_metadata(thread_id: str, assistant_text: str, activities: list[dict], sources: list[dict]) -> None:
+    if not assistant_text:
+        return
+
+    config = {"configurable": {"thread_id": thread_id}}
+    cp = checkpoint.get(config)
+    if not cp:
+        return
+
+    channel_values = cp.get("channel_values") or {}
+    messages = channel_values.get("messages") or []
+    if not messages:
+        return
+
+    metadata = encode_assistant_metadata(activities, sources)
+    for msg in reversed(messages):
+        if not isinstance(msg, AIMessage):
+            continue
+        content = _extract_text_content(msg.content)
+        if not content or ASSISTANT_META_START in content:
+            continue
+        if assistant_text.strip() and assistant_text.strip() not in content:
+            continue
+        if isinstance(msg.content, str):
+            msg.content = f"{msg.content}{metadata}"
+        elif isinstance(msg.content, list):
+            for item in msg.content:
+                if isinstance(item, dict) and item.get("type") == "text":
+                    item["text"] = f"{item.get('text', '')}{metadata}"
+                    break
+        checkpoint.put(config, cp["checkpoint"], cp.get("metadata", {}), cp.get("new_versions", {}))
+        return
 
 
 def derive_session_title(messages: list[dict]) -> str:
